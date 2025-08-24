@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gurbani Shabad Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Fonts -->
+  <link rel="preload" href="/assets/fonts/AnmolLipiSG.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/GurbaniAkharHeavyTrue.ttf" as="font" type="font/ttf" crossorigin>
+
+  <style>
+    body {
+      font-family: 'AnmolLipiSG', 'GurbaniAkharHeavyTrue', 'Noto Sans Gurmukhi', sans-serif;
+      margin: 0;
+      padding: 1rem;
+      line-height: 2;
+      background: #fafafa;
+    }
+    .shabad-container {
+      max-width: 800px;
+      margin: auto;
+      background: #fff;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+    }
+    .gurmukhi {
+      font-size: 1.4rem;
+      margin-bottom: 1rem;
+      color: #222;
+    }
+    .translation {
+      font-size: 1rem;
+      color: #444;
+      margin-bottom: 1.2rem;
+    }
+    .meta {
+      font-size: 0.9rem;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <div class="shabad-container">
+    <h2 id="shabad-title">Loading...</h2>
+    <div id="shabad-lines"></div>
+    <div class="meta" id="shabad-meta"></div>
+  </div>
+
+  <script>
+    // Get ID from URL (example: ?id=358)
+    const urlParams = new URLSearchParams(window.location.search);
+    const shabadId = urlParams.get("id") || 358;
+
+    async function fetchShabad(id) {
+      const res = await fetch(`https://api.banidb.com/v2/shabad/${id}`);
+      const data = await res.json();
+      return data;
+    }
+
+    function renderShabad(data) {
+      document.getElementById("shabad-title").innerText = `Shabad ID: ${data.shabadId}`;
+
+      const container = document.getElementById("shabad-lines");
+      container.innerHTML = "";
+
+      data.shabad.forEach(line => {
+        const gurmukhi = document.createElement("div");
+        gurmukhi.className = "gurmukhi";
+        gurmukhi.textContent = line.gurmukhi.unicode;
+
+        const english = document.createElement("div");
+        english.className = "translation";
+        english.textContent = line.translation.english.default;
+
+        container.appendChild(gurmukhi);
+        container.appendChild(english);
+      });
+
+      document.getElementById("shabad-meta").innerText = 
+        `${data.source.sourceGurmukhi} • Ang ${data.shabadInfo.pageno} • ${data.shabadInfo.raag.raagGurmukhi}`;
+    }
+
+    // Load Shabad
+    fetchShabad(shabadId).then(renderShabad);
+  </script>
+</body>
+</html>

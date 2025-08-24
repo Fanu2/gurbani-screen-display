@@ -1,0 +1,21 @@
+{
+  "name": "Gurbani Search",
+  "short_name": "Gurbani",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#01669b",
+  "description": "Read, search, and explore Gurbani Shabads offline or online.",
+  "icons": [
+    {
+      "src": "/assets/images/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/images/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

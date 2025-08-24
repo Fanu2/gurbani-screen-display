@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Shabad Viewer - Gurbani</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#01669b">
+
+  <!-- Fonts -->
+  <link rel="preload" href="assets/fonts/AnmolLipi.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="assets/fonts/GurbaniAkharHeavy.ttf" as="font" type="font/ttf" crossorigin>
+  <style>
+    @font-face {
+      font-family: 'AnmolLipi';
+      src: url('assets/fonts/AnmolLipi.ttf') format('truetype');
+    }
+    body {
+      font-family: 'AnmolLipi', 'Raavi', sans-serif;
+      margin: 0;
+      padding: 1rem;
+      background: #fafafa;
+    }
+    header {
+      background: #01669b;
+      color: white;
+      padding: 1rem;
+      text-align: center;
+    }
+    .toolbar {
+      display: flex;
+      justify-content: center;
+      margin: 1rem 0;
+      gap: 0.5rem;
+    }
+    .toolbar button {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .gurbani { font-size: 1.5rem; line-height: 2.4rem; margin-bottom: 1rem; }
+    .translation { font-size: 1rem; color: #444; margin-bottom: 1rem; }
+    .hidden { display: none; }
+    .line-number { color: #999; margin-right: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Shabad Viewer</h1>
+  </header>
+
+  <div class="toolbar">
+    <button onclick="toggleLang('english')">English</button>
+    <button onclick="toggleLang('punjabi')">Punjabi</button>
+    <button onclick="toggleLang('hindi')">Hindi</button>
+    <button onclick="toggleVisraam()">Toggle Visraam</button>
+  </div>
+
+  <div id="shabad"></div>
+
+  <script>
+    // Dummy Shabad lines
+    const lines = [
+      { gurmukhi: 'ਕਿਰਤਿ ਕਰਮ ਕੇ ਵੀਛੁੜੇ ਕਰਿ ਕਿਰਪਾ ਮੇਲਹੁ ਰਾਮ ॥', en: 'By the actions we have committed, we are separated...', pa: 'ਕਿਰਤ ਕਰਮ ਦੇ ਕਾਰਨ ਅਸੀਂ ਵਿੱਛੜੇ...', hi: 'किरत करम के कारण हम अलग हुए...' },
+      { gurmukhi: 'ਸਤਿਗੁਰੁ ਮਿਲੈ ਤਾ ਊਝੜੁ ਨਾਹੀ ॥੧॥', en: 'If I meet the True Guru, there is no wilderness.', pa: 'ਜਦੋਂ ਸਤਿਗੁਰੂ ਮਿਲਦਾ ਹੈ...', hi: 'जब सच्चे गुरु मिलते हैं...' }
+    ];
+
+    const shabadDiv = document.getElementById('shabad');
+    let show = { english: true, punjabi: true, hindi: false };
+    let showVisraam = false;
+
+    function render() {
+      shabadDiv.innerHTML = '';
+      lines.forEach((line, idx) => {
+        const container = document.createElement('div');
+        container.classList.add('line');
+
+        const gurmukhi = document.createElement('div');
+        gurmukhi.className = 'gurbani';
+        gurmukhi.innerHTML = `<span class="line-number">${idx+1}.</span>` +
+          (showVisraam ? line.gurmukhi.replace('॥', ' ॥ (ਵਿਸ੍ਰਾਮ)') : line.gurmukhi);
+        container.appendChild(gurmukhi);
+
+        if (show.english) {
+          const en = document.createElement('div');
+          en.className = 'translation';
+          en.innerText = line.en;
+          container.appendChild(en);
+        }
+        if (show.punjabi) {
+          const pa = document.createElement('div');
+          pa.className = 'translation';
+          pa.innerText = line.pa;
+          container.appendChild(pa);
+        }
+        if (show.hindi) {
+          const hi = document.createElement('div');
+          hi.className = 'translation';
+          hi.innerText = line.hi;
+          container.appendChild(hi);
+        }
+
+        shabadDiv.appendChild(container);
+      });
+    }
+
+    function toggleLang(lang) {
+      show[lang] = !show[lang];
+      render();
+    }
+
+    function toggleVisraam() {
+      showVisraam = !showVisraam;
+      render();
+    }
+
+    render();
+
+    // Service Worker registration
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js').then(reg => {
+        console.log('SW registered:', reg);
+      }).catch(err => console.error('SW failed:', err));
+    }
+  </script>
+</body>
+</html>

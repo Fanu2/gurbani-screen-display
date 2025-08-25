@@ -1,7 +1,7 @@
 # app.py
 import streamlit as st
-from gurbani_renderer import render_batch, parse_items_from_json_bytes, THEMES, render_image
-import zipfile, io, base64, tempfile
+from gurbani_renderer import render_batch, parse_items_from_json_bytes, THEMES
+import zipfile, io, tempfile, os
 
 st.set_page_config(page_title="Gurbani Screen Display", page_icon="✨", layout="wide")
 
@@ -22,10 +22,10 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Fonts")
-    gur_font_file = st.file_uploader("Gurmukhi font (TTF, e.g., Raavi.ttf or NotoSansGurmukhi.ttf)", type=["ttf"])
+    gur_font_file = st.file_uploader("Gurmukhi font (TTF, e.g., Raavi.ttf)", type=["ttf"])
     lat_font_file = st.file_uploader("Latin font (TTF, e.g., NotoSans-Regular.ttf)", type=["ttf"])
 
-# ---------------- File Upload ---------------- #
+# ---------------- JSON upload ---------------- #
 st.markdown("#### 1) Upload Gurbani JSON")
 json_file = st.file_uploader("JSON file", type=["json"])
 
@@ -36,37 +36,46 @@ with col1:
 
 with col2:
     st.markdown("#### Tips")
-    st.write("- Your JSON can be a simple list of objects with `line`, or the special format with a `text` dictionary.")
-    st.write("- Use Raavi/AnmolUni/GurbaniAkhar for Gurmukhi; Inter/NotoSans for Latin.")
-    st.write("- Fonts are now embedded with base64 → no missing font errors!")
+    st.write("- Upload Raavi/AnmolUni/GurbaniAkhar for Gurmukhi; Inter/NotoSans for Latin.")
+    st.write("- If no font is uploaded, system fallback will be used.")
 
-# ---------------- Helper: Encode font ---------------- #
-def font_to_base64_css(font_file, name):
-    """Convert uploaded font to base64 CSS @font-face rule."""
-    if font_file is None:
-        return ""
-    font_bytes = font_file.read()
-    b64 = base64.b64encode(font_bytes).decode("utf-8")
-    return f"""
-    @font-face {{
-        font-family: '{name}';
-        src: url(data:font/ttf;base64,{b64}) format('truetype');
-        font-weight: normal;
-        font-style: normal;
-    }}
-    """
-
-# ---------------- Main Logic ---------------- #
-if json_file and gur_font_file and lat_font_file:
-    # Load JSON items
+# ---------------- Main rendering ---------------- #
+if json_file is not None:
     items = parse_items_from_json_bytes(json_file.read())
     if not items:
         st.error("No lines found in JSON.")
     else:
         st.success(f"Loaded {len(items)} line(s).")
 
-        # Prepare config
+        # Canvas size
         W, H = map(int, size_choice.lower().split("x"))
+
+        # --- Handle fonts with fallback --- #
+        gur_font_path, lat_font_path = None, None
+
+        if gur_font_file is not None:
+            gur_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ttf")
+            gur_tmp.write(gur_font_file.read())
+            gur_tmp.flush()
+            gur_font_path = gur_tmp.name
+        else:
+            # fallback
+            gur_font_path = "/usr/share/fonts/truetype/noto/NotoSansGurmukhi-Regular.ttf"
+            if not os.path.exists(gur_font_path):
+                gur_font_path = "Raavi"  # Windows fallback
+
+        if lat_font_file is not None:
+            lat_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ttf")
+            lat_tmp.write(lat_font_file.read())
+            lat_tmp.flush()
+            lat_font_path = lat_tmp.name
+        else:
+            # fallback
+            lat_font_path = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
+            if not os.path.exists(lat_font_path):
+                lat_font_path = "Arial"  # Windows fallback
+
+        # Config
         cfg = dict(
             size=(W, H),
             padding=padding,
@@ -77,18 +86,14 @@ if json_file and gur_font_file and lat_font_file:
             theme=theme,
             frame=frame,
             watermark=watermark,
+            font_gurmukhi=gur_font_path,
+            font_latin=lat_font_path,
         )
-
-        # Embed fonts as CSS
-        gur_font_css = font_to_base64_css(gur_font_file, "GurmukhiFont")
-        lat_font_css = font_to_base64_css(lat_font_file, "LatinFont")
-        cfg["font_css"] = gur_font_css + lat_font_css
-        cfg["font_gurmukhi"] = "GurmukhiFont"
-        cfg["font_latin"] = "LatinFont"
 
         if mode == "Slideshow preview in app":
             st.markdown("### Slideshow Preview")
             idx = st.slider("Line index", 1, min(len(items), 50), 1)
+            from gurbani_renderer import render_image
             imgbuf = render_image(items[idx - 1], cfg)
             st.image(imgbuf, caption=f"Line {idx}/{len(items)}", use_column_width=True)
 
@@ -99,22 +104,24 @@ if json_file and gur_font_file and lat_font_file:
                 if not images:
                     st.error("Rendering failed.")
                 else:
-                    # zip them
                     zip_buf = io.BytesIO()
                     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                         for i, buf in enumerate(images, 1):
                             zf.writestr(f"gurbani_{i:04d}.png", buf.getvalue())
                     zip_buf.seek(0)
                     st.success(f"Generated {len(images)} images.")
-                    st.download_button("Download ZIP", data=zip_buf,
-                                       file_name="gurbani_images.zip", mime="application/zip")
+                    st.download_button(
+                        "Download ZIP",
+                        data=zip_buf,
+                        file_name="gurbani_images.zip",
+                        mime="application/zip",
+                    )
 
 else:
-    st.info("Upload JSON + two fonts (TTF) to proceed.")
+    st.info("Upload JSON to proceed. Fonts optional (system fallback used if missing).")
 
-# ---------------- Footer ---------------- #
+# ---------------- Sample JSON ---------------- #
 st.markdown("---")
 st.markdown("Need an example? Download our sample JSON.")
 with open("sample.json", "rb") as f:
-    st.download_button("Download sample.json", f,
-                       file_name="sample.json", mime="application/json")
+    st.download_button("Download sample.json", f, file_name="sample.json", mime="application/json")

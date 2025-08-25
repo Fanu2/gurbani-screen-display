@@ -1,135 +1,214 @@
-# app.py
-import streamlit as st
-from gurbani_renderer import render_batch, render_image, parse_items_from_json_bytes, THEMES
-from PIL import ImageFont
-import zipfile, io, os, tempfile
+from PIL import Image, ImageDraw, ImageFont
+import io, json
+from functools import lru_cache
+import math
 
-st.set_page_config(page_title="Gurbani Screen Display", page_icon="✨", layout="wide")
+# Try to import HarfBuzz + FreeType
+try:
+    import uharfbuzz as hb
+    import freetype
+    _HB_AVAILABLE = True
+except Exception:
+    _HB_AVAILABLE = False
 
-st.title("✨ Gurbani Screen Display")
-st.caption("Upload your Gurbani JSON to generate beautiful display images — with Punjabi + English titles.")
 
-# --- Sidebar ---
-with st.sidebar:
-    st.header("Settings")
-    theme = st.selectbox("Theme", list(THEMES.keys()), index=0)
-    size_choice = st.selectbox("Canvas Size", ["1920x1080", "2560x1440", "1080x1920"], index=0)
-    padding = st.slider("Padding (px)", 40, 200, 100, 10)
-    gurbani_size = st.slider("Gurbani Start Size", 60, 140, 96, 2)
-    title_size = st.slider("Punjabi Title Size", 40, 90, 56, 2)
-    subtitle_size = st.slider("English Title Size", 28, 70, 40, 2)
-    frame = st.checkbox("Ornamental Frame", value=True)
-    watermark = st.text_input("Watermark (optional)", value="")
+# ---------------- THEME DEFINITIONS ----------------
+THEMES = {
+    "Light": {"bg": (255, 255, 255), "fg": (0, 0, 0)},
+    "Dark": {"bg": (0, 0, 0), "fg": (255, 255, 255)},
+    "Sepia": {"bg": (245, 230, 200), "fg": (50, 30, 10)},
+}
 
-    st.markdown("---")
-    st.subheader("Fonts")
-    gur_font_file = st.file_uploader("Gurmukhi font (TTF, e.g., Raavi.ttf)", type=["ttf"])
-    lat_font_file = st.file_uploader("Latin font (TTF, e.g., NotoSans-Regular.ttf)", type=["ttf"])
 
-# --- JSON Upload ---
-st.markdown("#### 1) Upload Gurbani JSON")
-json_file = st.file_uploader("JSON file", type=["json"])
+# ---------------- JSON PARSER ----------------
+def parse_items_from_json_bytes(data: bytes):
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except Exception:
+        return []
 
-col1, col2 = st.columns([1, 2])
-with col1:
-    st.markdown("#### 2) Choose Mode")
-    mode = st.radio("Generation Mode", ["Batch images (download)", "Slideshow preview in app"], index=0)
+    items = []
+    if isinstance(raw, list):
+        for obj in raw:
+            if isinstance(obj, dict) and "line" in obj:
+                items.append(obj)
+            elif isinstance(obj, dict) and "text" in obj:
+                items.append(obj["text"])
+            elif isinstance(obj, str):
+                items.append({"line": obj})
+    return items
 
-with col2:
-    st.markdown("#### Tips")
-    st.write("- Your JSON can be a simple list of objects with `line`, or the special format with a `text` dictionary (as in sample).")
-    st.write("- Use Raavi/AnmolUni/GurbaniAkhar for Gurmukhi; Inter/NotoSans for Latin.")
 
-# --- Main Logic ---
-if json_file is not None:
-    # Load JSON items
-    items = parse_items_from_json_bytes(json_file.read())
-    if not items:
-        st.error("No lines found in JSON.")
-        st.stop()
-    else:
-        st.success(f"Loaded {len(items)} line(s).")
+# ---------------- FONT HELPERS ----------------
+@lru_cache(maxsize=8)
+def _load_fontdata(font_path: str) -> bytes:
+    with open(font_path, "rb") as f:
+        return f.read()
 
-    # Prepare config
-    W, H = map(int, size_choice.lower().split("x"))
-    cfg = dict(
-        size=(W, H),
-        padding=padding,
-        gurbani_size=gurbani_size,
-        title_size=title_size,
-        subtitle_size=subtitle_size,
-        watermark_size=28,
-        theme=theme,
-        frame=frame,
-        watermark=watermark,
-        font_gurmukhi=None,
-        font_latin=None,
+@lru_cache(maxsize=8)
+def _load_ft_face(font_path: str):
+    face = freetype.Face(font_path)
+    return face
+
+def _ft_set_size(face, size_px: int):
+    face.set_char_size(size_px * 64)
+
+def _hb_shape(text: str, font_bytes: bytes):
+    buf = hb.Buffer()
+    buf.add_str(text)
+    buf.guess_segment_properties()
+    font = hb.Font(hb.Face(font_bytes))
+    hb.shape(font, buf, {})
+    return buf.glyph_infos, buf.glyph_positions
+
+
+# ---------------- TEXT RENDERING ----------------
+def hb_measure(text: str, font_path: str, size_px: int):
+    """Returns (width, height, ascent, descent) in px for shaped text."""
+    if not _HB_AVAILABLE:
+        pil_font = ImageFont.truetype(font_path, size_px)
+        w, h = pil_font.getbbox(text)[2:]
+        ascent, descent = pil_font.getmetrics()
+        return w, h, ascent, descent
+
+    font_bytes = _load_fontdata(font_path)
+    infos, pos = _hb_shape(text, font_bytes)
+
+    adv_x = sum(p.x_advance for p in pos) / 64.0
+
+    face = _load_ft_face(font_path)
+    _ft_set_size(face, size_px)
+    ascent = face.size.ascender / 64.0 if hasattr(face.size, "ascender") else size_px * 0.8
+    descent = -face.size.descender / 64.0 if hasattr(face.size, "descender") else size_px * 0.2
+    height = ascent + descent
+
+    return int(math.ceil(adv_x)), int(math.ceil(height)), int(ascent), int(descent)
+
+
+def hb_render(img: Image.Image, text: str, font_path: str, size_px: int, fill, xy):
+    """Draw shaped text onto img at (x,y baseline)."""
+    if not _HB_AVAILABLE:
+        draw = ImageDraw.Draw(img)
+        pil_font = ImageFont.truetype(font_path, size_px)
+        draw.text(xy, text, font=pil_font, fill=fill, anchor="ls")
+        w, h = draw.textbbox(xy, text, font=pil_font)[2:]
+        return w, h
+
+    x0, y0 = xy
+    font_bytes = _load_fontdata(font_path)
+    face = _load_ft_face(font_path)
+    _ft_set_size(face, size_px)
+    infos, positions = _hb_shape(text, font_bytes)
+
+    pen_x, pen_y = float(x0), float(y0)
+    max_y = y0
+    min_y = y0
+
+    for info, pos in zip(infos, positions):
+        gid = info.codepoint
+        dx = pos.x_offset / 64.0
+        dy = -pos.y_offset / 64.0
+
+        face.load_glyph(gid, freetype.FT_LOAD_RENDER)
+        slot = face.glyph
+        bmp = slot.bitmap
+        w, h = bmp.width, bmp.rows
+        top = slot.bitmap_top
+        left = slot.bitmap_left
+
+        if w > 0 and h > 0:
+            glyph_img = Image.frombytes("L", (w, h), bytes(bmp.buffer))
+            gx = int(pen_x + dx + left)
+            gy = int(pen_y + dy - top)
+            img.paste(Image.new("RGBA", (w, h), fill), (gx, gy), glyph_img)
+
+            max_y = max(max_y, gy + h)
+            min_y = min(min_y, gy)
+
+        pen_x += pos.x_advance / 64.0
+        pen_y -= pos.y_advance / 64.0
+
+    return int(pen_x - x0), max_y - min_y
+
+
+def shape_wrap(text: str, font_path: str, size_px: int, max_width: int):
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines, cur = [], words[0]
+    for w in words[1:]:
+        probe = cur + " " + w
+        w_px, *_ = hb_measure(probe, font_path, size_px)
+        if w_px <= max_width:
+            cur = probe
+        else:
+            lines.append(cur)
+            cur = w
+    lines.append(cur)
+    return lines
+
+
+def draw_gurmukhi_centered(img: Image.Image, text: str, font_path: str, size_px: int,
+                           fill, center_x: int, y: int, max_width: int, line_gap: int = 10):
+    lines = shape_wrap(text, font_path, size_px, max_width)
+    total_h = 0
+    for line in lines:
+        w_px, h_px, asc, desc = hb_measure(line, font_path, size_px)
+        x = int(center_x - w_px / 2)
+        baseline_y = int(y + asc)
+        hb_render(img, line, font_path, size_px, fill, (x, baseline_y))
+        y += int(h_px + line_gap)
+        total_h += int(h_px + line_gap)
+    return total_h
+
+
+# ---------------- MAIN RENDERER ----------------
+def render_image(item, cfg):
+    W, H = cfg["size"]
+    theme = THEMES[cfg["theme"]]
+    img = Image.new("RGBA", (W, H), theme["bg"])
+
+    # Draw Gurbani line
+    gurmukhi_text = item.get("line") if isinstance(item, dict) else str(item)
+    y = cfg["padding"]
+
+    line_gap = max(8, cfg["gurbani_size"] // 6)
+    draw_gurmukhi_centered(
+        img=img,
+        text=gurmukhi_text,
+        font_path=cfg["font_gurmukhi"],
+        size_px=cfg["gurbani_size"],
+        fill=theme["fg"],
+        center_x=W // 2,
+        y=y,
+        max_width=W - 2 * cfg["padding"],
+        line_gap=line_gap,
     )
 
-    # --- Font handling (uploads + fallback) ---
-    # Gurmukhi font
-    if gur_font_file is not None:
-        gur_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ttf")
-        gur_tmp.write(gur_font_file.read()); gur_tmp.flush()
-        cfg["font_gurmukhi"] = gur_tmp.name
-    else:
-        gur_fallback = os.path.join("fonts", "NotoSansGurmukhi-Regular.ttf")
-        if os.path.exists(gur_fallback):
-            cfg["font_gurmukhi"] = gur_fallback
-        else:
-            st.error("⚠️ No Gurmukhi font found. Please upload one or place NotoSansGurmukhi-Regular.ttf in fonts/.")
-            st.stop()
+    # Punjabi Title
+    if "title" in item:
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype(cfg["font_gurmukhi"], cfg["title_size"])
+        text = item["title"]
+        w = draw.textlength(text, font=font)
+        draw.text(((W - w) // 2, H - cfg["padding"]*2),
+                  text, font=font, fill=theme["fg"])
 
-    # Latin font
-    if lat_font_file is not None:
-        lat_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ttf")
-        lat_tmp.write(lat_font_file.read()); lat_tmp.flush()
-        cfg["font_latin"] = lat_tmp.name
-    else:
-        lat_fallback = os.path.join("fonts", "NotoSans-Regular.ttf")
-        if os.path.exists(lat_fallback):
-            cfg["font_latin"] = lat_fallback
-        else:
-            st.error("⚠️ No Latin font found. Please upload one or place NotoSans-Regular.ttf in fonts/.")
-            st.stop()
+    # English Subtitle
+    if "subtitle" in item:
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype(cfg["font_latin"], cfg["subtitle_size"])
+        text = item["subtitle"]
+        w = draw.textlength(text, font=font)
+        draw.text(((W - w) // 2, H - cfg["padding"]),
+                  text, font=font, fill=theme["fg"])
 
-    # Validate font loading
-    try:
-        _ = ImageFont.truetype(cfg["font_gurmukhi"], gurbani_size)
-        _ = ImageFont.truetype(cfg["font_latin"], subtitle_size)
-    except Exception as e:
-        st.error(f"Font loading failed: {e}")
-        st.stop()
-    # --- End font handling ---
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
-    # --- Preview or Batch ---
-    if mode == "Slideshow preview in app":
-        st.markdown("### Slideshow Preview")
-        idx = st.slider("Line index", 1, min(len(items), 50), 1)
-        imgbuf = render_image(items[idx-1], cfg)
-        st.image(imgbuf, caption=f"Line {idx}/{len(items)}", use_column_width=True)
 
-    else:
-        st.markdown("### Generate Images")
-        if st.button("Render All"):
-            images = render_batch(items, cfg)
-            if not images:
-                st.error("Rendering failed.")
-            else:
-                # zip them
-                zip_buf = io.BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for i, buf in enumerate(images, 1):
-                        zf.writestr(f"gurbani_{i:04d}.png", buf.getvalue())
-                zip_buf.seek(0)
-                st.success(f"Generated {len(images)} images.")
-                st.download_button("Download ZIP", data=zip_buf, file_name="gurbani_images.zip", mime="application/zip")
-
-else:
-    st.info("Upload JSON + fonts (or use defaults in fonts/ folder) to proceed.")
-
-# --- Sample JSON download ---
-st.markdown("---")
-st.markdown("Need an example? Download our sample JSON.")
-with open("sample.json", "rb") as f:
-    st.download_button("Download sample.json", f, file_name="sample.json", mime="application/json")
+def render_batch(items, cfg):
+    return [render_image(it, cfg) for it in items]

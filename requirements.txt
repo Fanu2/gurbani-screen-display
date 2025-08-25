@@ -1,4 +1,4 @@
-streamlit>=1.33
-Pillow>=10.2
-uharfbuzz>=0.37.5
-freetype-py>=2.4.0
+streamlit==1.36.0
+pillow==10.4.0
+uharfbuzz==0.37.3
+freetype-py==2.4.0
